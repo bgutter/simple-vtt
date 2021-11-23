@@ -13,8 +13,14 @@ from PySide2 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 # Audio processing
-import numpy as np
 import sounddevice as sd
+import numpy as np
+import scipy.signal as sps
+
+def getapp():
+    """Convenience method to retrieve the QApplication singleton
+    """
+    return SimpleVoiceToTextApplication.instance()
 
 class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
     """
@@ -84,7 +90,7 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
         # Great, done.
         self.sample_semaphore.release()
 
-    def _redraw( self):
+    def _redraw(self):
         """Update the displayed waveform
 
         This function is called at a "reasonable rate" to update the
@@ -93,20 +99,13 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
         size), which is probably a fair bit faster than needed here.
         """
 
-        # Secure the lock before accessing the sample buffer
+        # Safely grab a copy of the current buffer
         self.sample_semaphore.acquire()
-
-        if self.main_window.plot_item is None:
-            # Plot data item not yet created -- must be the first update
-            # Create it
-            self.main_window.plot_item = self.main_window.plot_widget.plot( self.sample_buffer )
-
-        else:
-            # already have plot data item, update its data
-            self.main_window.plot_item.setData( self.sample_buffer )
-
-        # Done! Release the lock
+        data = self.sample_buffer.copy().astype( float )
         self.sample_semaphore.release()
+
+        # Give it to the window
+        self.main_window.redraw( data )
 
 class MainWindow(QtWidgets.QMainWindow):
     """Main window for the Application
@@ -114,7 +113,7 @@ class MainWindow(QtWidgets.QMainWindow):
     This window will show our realtime audio waveform.
     """
 
-    def __init__( self ):
+    def __init__(self):
         """
         Build and show self.
         """
@@ -136,5 +135,33 @@ class MainWindow(QtWidgets.QMainWindow):
         top_layout.addWidget(self.plot_widget)
         self.plot_item = None
 
+        # Add the STFT plot
+        self.stft_view = pg.ImageView()
+        self.stft_view.view.setAspectLocked(False)
+        self.stft_view.setColorMap(pg.colormap.getFromMatplotlib('rainbow'))
+        top_layout.addWidget(self.stft_view)
+
         # That's it -- we can display the ourselves now!
         self.show()
+
+    def redraw(self, audio_clip):
+        """Update all widgets with new data
+
+        Recalculate all features and update all plots with new data.
+        """
+
+        # Time-domain sample
+        if self.plot_item is None:
+            # Plot data item not yet created -- must be the first update
+            # Create it
+            self.plot_item = self.plot_widget.plot( audio_clip )
+
+        else:
+            # already have plot data item, update its data
+            self.plot_item.setData( audio_clip )
+
+        # STFT
+        freqs, times, img = sps.stft( audio_clip, fs=getapp().mic_fs, nperseg=getapp().mic_fs/10 )
+        img = np.absolute( img )[::-1].T
+        self.stft_view.setImage( img, autoRange=False, autoLevels=False, autoHistogramRange=False )
+
