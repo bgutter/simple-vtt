@@ -132,14 +132,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # Lets create our plot widget for realtime audio display
         # We'll also need to keep a handle on the actual displayed data, which is nothing right now
         self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setLabel( "left", "Air Pressure on Microphone Membrane" )
+        self.plot_widget.setLabel( "bottom", "Time (seconds)" )
         top_layout.addWidget(self.plot_widget)
         self.plot_item = None
 
         # Add the STFT plot
-        self.stft_view = pg.ImageView()
-        self.stft_view.view.setAspectLocked(False)
-        self.stft_view.setColorMap(pg.colormap.getFromMatplotlib('rainbow'))
-        top_layout.addWidget(self.stft_view)
+        self.stft_plot = pg.PlotWidget()
+        self.stft_plot.setLabel( "bottom", "Time (seconds)" )
+        self.stft_plot.setLabel( "left", "Frequency (Hz)" )
+        self.stft_item = None
+        top_layout.addWidget(self.stft_plot)
 
         # That's it -- we can display the ourselves now!
         self.show()
@@ -151,17 +154,24 @@ class MainWindow(QtWidgets.QMainWindow):
         """
 
         # Time-domain sample
+        x = np.linspace( 0, len(audio_clip)/getapp().mic_fs, len(audio_clip) )
         if self.plot_item is None:
             # Plot data item not yet created -- must be the first update
             # Create it
-            self.plot_item = self.plot_widget.plot( audio_clip )
+            self.plot_item = self.plot_widget.plot( x, audio_clip )
 
         else:
             # already have plot data item, update its data
-            self.plot_item.setData( audio_clip )
+            self.plot_item.setData( x, audio_clip )
 
         # STFT
-        freqs, times, img = sps.stft( audio_clip, fs=getapp().mic_fs, nperseg=getapp().mic_fs/10 )
-        img = np.absolute( img )[::-1].T
-        self.stft_view.setImage( img, autoRange=False, autoLevels=False, autoHistogramRange=False )
-
+        freqs, times, img = sps.stft( audio_clip, fs=getapp().mic_fs, nperseg=getapp().mic_fs/20 )
+        img = np.absolute( img ).T
+        if self.stft_item is None:
+            self.stft_item = pg.ImageItem( img )
+            self.stft_item.setColorMap(pg.colormap.getFromMatplotlib('rainbow'))
+            self.stft_item.setLevels((0, 0.01))
+            self.stft_item.scale( times[-1] / img.shape[0], freqs[-1] / img.shape[1])
+            self.stft_plot.addItem( self.stft_item )
+        else:
+            self.stft_item.setImage( img, autoLevels=False )
