@@ -17,6 +17,8 @@ import sounddevice as sd
 import numpy as np
 import scipy.signal as sps
 
+DEFAULT_SAMPLE_RATE = 8000
+
 def getapp():
     """Convenience method to retrieve the QApplication singleton
     """
@@ -27,7 +29,7 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
     Capture realtime audio and display it
     """
 
-    def __init__( self, mic_fs=44100, memory_seconds=10 ):
+    def __init__( self, mic_fs=DEFAULT_SAMPLE_RATE, memory_seconds=10 ):
         """
         Initialize a new SimpleVoiceToTextApplication.
 
@@ -53,7 +55,7 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
 
         # Open the sound device & start it
         # blocksize of 3000 is needed to prevent buffer underruns in ALSA on my machine
-        self.mic = sd.InputStream(samplerate=self.mic_fs, blocksize=3000, callback=self._onSoundSamplesReceived)
+        self.mic = sd.InputStream(samplerate=self.mic_fs, blocksize=int( mic_fs/31), callback=self._onSoundSamplesReceived)
         self.mic.start()
 
         # Start the redraw timer at 30 FPS
