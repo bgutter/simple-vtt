@@ -12,10 +12,10 @@ import threading
 from PySide2 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
-# Audio processing
+# audio IO
 import sounddevice as sd
-import numpy as np
-import scipy.signal as sps
+
+from simple_vtt.VoiceModel import *
 
 DEFAULT_SAMPLE_RATE = 8000
 
@@ -29,7 +29,7 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
     Capture realtime audio and display it
     """
 
-    def __init__( self, mic_fs=DEFAULT_SAMPLE_RATE, memory_seconds=10 ):
+    def __init__( self, mic_fs=DEFAULT_SAMPLE_RATE ):
         """
         Initialize a new SimpleVoiceToTextApplication.
 
@@ -37,25 +37,26 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
         ----------
         mic_fs : int
             The sample rate to use with the microphone, in Hz. Defaults to 44.1 KHz
-        memory_seconds : float
-            The capture window width, in seconds. Defaults to 10 seconds.
         """
         super( SimpleVoiceToTextApplication, self ).__init__(sys.argv)
 
         # Grab params from keyword args
         self.mic_fs = mic_fs
-        self.memory_seconds = memory_seconds
+
+        # Create the voice model & a semaphore to protect it
+        self.voice_model = VoiceModel()
+        self.voice_model_semaphore = threading.Lock()
 
         # Create the main window
         self.main_window = MainWindow()
 
-        # Create the sound sample buffer
-        self.sample_semaphore = threading.Lock()
-        self.sample_buffer = np.zeros(self.mic_fs * self.memory_seconds)
-
         # Open the sound device & start it
-        # blocksize of 3000 is needed to prevent buffer underruns in ALSA on my machine
-        self.mic = sd.InputStream(samplerate=self.mic_fs, blocksize=int( mic_fs/31), callback=self._onSoundSamplesReceived)
+        # blocksize parameter needs to be sufficiently high to avoid ALSA underrun conditions
+        # Mono audio for now
+        self.mic = sd.InputStream(samplerate=self.mic_fs,
+                                  blocksize=int( mic_fs/31),
+                                  channels=1,
+                                  callback=self._onSoundSamplesReceived)
         self.mic.start()
 
         # Start the redraw timer at 30 FPS
@@ -78,19 +79,10 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
         # We don't need the frames parameter, but we'll check it anyway
         assert(indata.shape[0] == frames)
 
-        # Lock the sample buffer semaphore (so that we don't draw a half-edited buffer)
-        self.sample_semaphore.acquire()
-
-        # Roll the buffer backward, pushing the samples-to-be-overwritten to the front
-        # This is technically a lot of unneeded memory writes, but it keeps the buffer easy
-        # to work with and I think it will cut it for now
-        self.sample_buffer = np.roll(self.sample_buffer, len(indata))
-
-        # Overwrite the oldest samples (now at the front of the buffer) with the newest ones
-        self.sample_buffer[0: len(indata)] = indata[:,0]
-
-        # Great, done.
-        self.sample_semaphore.release()
+        # Update the voice model
+        self.voice_model_semaphore.acquire()
+        self.voice_model.process_audio_clip( indata, self.mic_fs, contiguous=True )
+        self.voice_model_semaphore.release()
 
     def _redraw(self):
         """Update the displayed waveform
@@ -102,12 +94,9 @@ class SimpleVoiceToTextApplication( QtWidgets.QApplication ):
         """
 
         # Safely grab a copy of the current buffer
-        self.sample_semaphore.acquire()
-        data = self.sample_buffer.copy().astype( float )
-        self.sample_semaphore.release()
-
-        # Give it to the window
-        self.main_window.redraw( data )
+        self.voice_model_semaphore.acquire()
+        self.main_window.redraw()
+        self.voice_model_semaphore.release()
 
 class MainWindow(QtWidgets.QMainWindow):
     """Main window for the Application
@@ -149,25 +138,26 @@ class MainWindow(QtWidgets.QMainWindow):
         # That's it -- we can display the ourselves now!
         self.show()
 
-    def redraw(self, audio_clip):
+    def redraw(self):
         """Update all widgets with new data
 
         Recalculate all features and update all plots with new data.
         """
 
         # Time-domain sample
-        x = np.linspace( 0, len(audio_clip)/getapp().mic_fs, len(audio_clip) )
+        audio_clip = getapp().voice_model.audio_buffer
+        x = np.linspace(0, len(audio_clip)/getapp().mic_fs, len(audio_clip))
         if self.plot_item is None:
             # Plot data item not yet created -- must be the first update
             # Create it
-            self.plot_item = self.plot_widget.plot( x, audio_clip )
+            self.plot_item = self.plot_widget.plot(x, audio_clip)
 
         else:
             # already have plot data item, update its data
             self.plot_item.setData( x, audio_clip )
 
         # STFT
-        freqs, times, img = sps.stft( audio_clip, fs=getapp().mic_fs, nperseg=getapp().mic_fs/20 )
+        freqs, times, img = getapp().voice_model.stft()
         img = np.absolute( img ).T
         if self.stft_item is None:
             self.stft_item = pg.ImageItem( img )
@@ -176,4 +166,4 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stft_item.scale( times[-1] / img.shape[0], freqs[-1] / img.shape[1])
             self.stft_plot.addItem( self.stft_item )
         else:
-            self.stft_item.setImage( img, autoLevels=False )
+            self.stft_item.setImage(img, autoLevels=False)
